@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="intro">
+  <h1>What's out there, and what it costs</h1>
+  <p class="lede">
+    Every model version, grounding surcharge, data API, and subscription tier in one
+    place &mdash; with the source and the date it was last checked on every single row.
+  </p>
+</section>
+
+<section class="provenance card">
+  <h2>Read this before quoting a client</h2>
+  <p class="provenance-intro">
+    Prices here are not equally trustworthy, and the catalog says so per row rather
+    than averaging the difference away.
+  </p>
+  <ul class="legend">
+    {% for key in confidences %}
+    <li>
+      <span class="badge badge-{{ key }}">{{ key | confidence_label }}</span>
+      <strong>{{ counts[key] }} rows.</strong>
+      {{ confidence_blurbs[key] }}
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="provenance-note">
+    Anything older than {{ stale_after_days }} days is marked
+    <span class="stale-flag">stale</span>. See <code>REFRESH.md</code> for how to
+    re-verify a provider and flip its rows to verified.
+  </p>
+</section>
+
+<form class="filters card" method="get" action="/">
+  <div class="filter-row">
+    <label class="filter grow">
+      <span>Search</span>
+      <input type="search" name="q" value="{{ selected.q }}" placeholder="Model name, provider, model ID, notes&hellip;">
+    </label>
+    <label class="filter">
+      <span>Provider</span>
+      <select name="provider">
+        <option value="">All</option>
+        {% for p in providers %}
+        <option value="{{ p }}" {% if selected.provider == p %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="filter">
+      <span>Type</span>
+      <select name="kind">
+        <option value="">All</option>
+        {% for k in kinds %}
+        <option value="{{ k }}" {% if selected.kind == k %}selected{% endif %}>{{ k | kind_label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="filter">
+      <span>Status</span>
+      <select name="status">
+        <option value="">All</option>
+        {% for s in statuses %}
+        <option value="{{ s }}" {% if selected.status == s %}selected{% endif %}>{{ s | status_label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="filter">
+      <span>Confidence</span>
+      <select name="confidence">
+        <option value="">All</option>
+        {% for c in confidences %}
+        <option value="{{ c }}" {% if selected.confidence == c %}selected{% endif %}>{{ c | confidence_label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="filter">
+      <span>Sort by</span>
+      <select name="sort">
+        {% for key, label in sorts.items() %}
+        <option value="{{ key }}" {% if selected.sort == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="filter">
+      <span>Order</span>
+      <select name="direction">
+        <option value="asc" {% if selected.direction == 'asc' %}selected{% endif %}>Ascending</option>
+        <option value="desc" {% if selected.direction == 'desc' %}selected{% endif %}>Descending</option>
+      </select>
+    </label>
+  </div>
+  <div class="filter-actions">
+    <button type="submit" class="button">Apply</button>
+    <a class="button button-quiet" href="/">Reset</a>
+    <span class="result-count">{{ rows | length }} of {{ total }} rows</span>
+    <a class="button button-quiet" href="/export.csv?{{ request.url.query }}">Download CSV</a>
+  </div>
+</form>
+
+{% if not rows %}
+<p class="empty card">Nothing matches those filters.</p>
+{% else %}
+<div class="table-wrap card">
+  <table class="catalog">
+    <thead>
+      <tr>
+        <th>Provider</th>
+        <th>Name</th>
+        <th class="num">Input<span class="unit">$/MTok</span></th>
+        <th class="num">Output<span class="unit">$/MTok</span></th>
+        <th class="num">Cache read<span class="unit">$/MTok</span></th>
+        <th class="num">Context</th>
+        <th>Other pricing</th>
+        <th>Status</th>
+        <th>Source</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr class="row-{{ row.confidence }}">
+        <td>{{ row.provider }}</td>
+        <td class="name-cell">
+          <button type="button" class="name-toggle" aria-expanded="false">{{ row.name }}</button>
+          {% if row.model_id %}<code class="model-id">{{ row.model_id }}</code>{% endif %}
+          <span class="badge badge-{{ row.confidence }}">{{ row.confidence | confidence_label }}</span>
+          {% if row.as_of and row.as_of < stale_cutoff %}<span class="stale-flag">stale</span>{% endif %}
+        </td>
+        <td class="num">{{ row.price_input | money }}</td>
+        <td class="num">{{ row.price_output | money }}</td>
+        <td class="num">{{ row.price_cache_read | money(4) }}</td>
+        <td class="num">{{ row.context_window | tokens }}</td>
+        <td class="unit-cell">
+          {% if row.unit_price is not none %}
+            <strong>{% if row.unit_label and 'percent' in row.unit_label %}{{ row.unit_price | abs }}%{% else %}{{ row.unit_price | money(4) }}{% endif %}</strong>
+            <span class="unit-label">{{ row.unit_label }}</span>
+          {% elif row.price_cache_write_5m is not none %}
+            <span class="unit-label">cache write {{ row.price_cache_write_5m | money }} / {{ row.price_cache_write_1h | money }} (5m / 1h)</span>
+          {% else %}
+            &mdash;
+          {% endif %}
+          {% if row.free_tier %}<span class="free-tier">Free: {{ row.free_tier }}</span>{% endif %}
+        </td>
+        <td><span class="status status-{{ row.status }}">{{ row.status | status_label }}</span></td>
+        <td class="source-cell">
+          {% if row.source_url %}<a href="{{ row.source_url }}" target="_blank" rel="noopener">page</a>{% endif %}
+          <span class="as-of">{{ row.as_of.isoformat() if row.as_of else 'undated' }}</span>
+        </td>
+      </tr>
+      {% if row.notes %}
+      <tr class="notes-row" hidden>
+        <td colspan="9"><div class="notes">{{ row.notes }}</div></td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}
